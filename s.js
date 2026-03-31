@@ -21,8 +21,6 @@ const storage = Mega({
 });
 
 let isReady = false;
-
-// 🔥 In-memory cache
 const uploadedFiles = {};
 
 storage.on("ready", () => {
@@ -35,100 +33,128 @@ storage.on("error", (err) => {
 });
 
 // ==============================
-// ✅ TEST ROUTE
+// 📁 GET OR CREATE uid/folder/
 // ==============================
-app.get("/", (req, res) => {
-    res.send("🚀 Server running");
-});
+async function getUserFolder(uid, folderName) {
+
+    let userFolder = storage.root.children.find(f => f.name === uid);
+
+    if (!userFolder) {
+        console.log("📁 Creating UID:", uid);
+
+        userFolder = await new Promise((resolve, reject) => {
+            storage.root.mkdir(uid, (err, folder) => {
+                if (err) return reject(err);
+                resolve(folder);
+            });
+        });
+    }
+
+    let folder = userFolder.children.find(f => f.name === folderName);
+
+    if (!folder) {
+        console.log("📁 Creating folder:", folderName);
+
+        folder = await new Promise((resolve, reject) => {
+            userFolder.mkdir(folderName, (err, newFolder) => {
+                if (err) return reject(err);
+                resolve(newFolder);
+            });
+        });
+    }
+
+    return folder;
+}
 
 // ==============================
 // 📤 UPLOAD ROUTE
 // ==============================
-app.post("/upload", upload.single("file"), (req, res) => {
+app.post("/upload", upload.single("file"), async (req, res) => {
+
+    const uid = req.body.uid;
+    const folderName = req.body.folder;
+
+    if (!uid || !folderName) {
+        return res.status(400).json({ error: "UID & folder required" });
+    }
 
     if (!isReady) {
         return res.status(500).json({ error: "MEGA not ready" });
     }
 
-    const filePath = req.file.path;
-    let fileName = req.file.originalname;
+    try {
+        const folder = await getUserFolder(uid, folderName);
 
-    console.log("📤 Received:", fileName);
+        const filePath = req.file.path;
+        let fileName = req.file.originalname;
 
-    // 🔥 Ensure extension exists
-    if (!path.extname(fileName)) {
-        fileName = "file_" + Date.now();
-    }
+        console.log("📤 Upload:", fileName, "UID:", uid, "Folder:", folderName);
 
-    const fileStream = fs.createReadStream(filePath);
+        if (!path.extname(fileName)) {
+            fileName = Date.now() + "_" + fileName;
+        }
 
-    const uploadStream = storage.upload({
-        name: fileName,
-        size: fs.statSync(filePath).size
-    });
+        const fileStream = fs.createReadStream(filePath);
 
-    fileStream.pipe(uploadStream);
-
-    uploadStream.on("complete", (file) => {
-
-        console.log("✅ Uploaded to MEGA:", file.name);
-
-        const fileId = Date.now().toString();
-
-        // 🔥 Store in memory
-        uploadedFiles[fileId] = file;
-
-        // delete temp file
-        fs.unlinkSync(filePath);
-
-        res.json({
-            success: true,
-            fileId: fileId,
-            fileName: file.name
+        const uploadStream = folder.upload({
+            name: fileName,
+            size: fs.statSync(filePath).size
         });
-    });
 
-    uploadStream.on("error", (err) => {
-        console.error("❌ Upload error:", err);
+        fileStream.pipe(uploadStream);
+
+        uploadStream.on("complete", (file) => {
+
+            const fileId = Date.now().toString();
+
+            console.log("🔥 NODE ID:", file.nodeId);
+
+            uploadedFiles[fileId] = {
+                file,
+                uid,
+                folderName,
+                fileName: file.name,
+                nodeId: file.nodeId
+            };
+
+            fs.unlinkSync(filePath);
+
+            res.json({
+                success: true,
+                fileId,
+                fileName: file.name,
+                nodeId: file.nodeId   // 🔥 IMPORTANT
+            });
+        });
+
+        uploadStream.on("error", (err) => {
+            console.error("❌ Upload error:", err);
+            res.status(500).json({ error: err.message });
+        });
+
+    } catch (err) {
         res.status(500).json({ error: err.message });
-    });
+    }
 });
 
 // ==============================
-// ⬇️ DOWNLOAD ROUTE (SMART)
+// ⬇️ DOWNLOAD ROUTE (FINAL FIX)
 // ==============================
-app.get("/download/:fileId/:fileName", async (req, res) => {
+app.get("/download/:nodeId/:fileName", async (req, res) => {
 
-    const { fileId, fileName } = req.params;
-
-    let file = uploadedFiles[fileId];
+    const { nodeId, fileName } = req.params;
 
     try {
-        // ==============================
-        // 🔥 STEP 1: Check memory
-        // ==============================
-        if (file) {
-            console.log("⚡ Found in memory:", file.name);
-        } else {
-            console.log("🔍 Not in memory, searching MEGA...");
+        console.log("🔍 Download using nodeId:", nodeId);
 
-            const files = storage.root.children;
+        const file = storage.files[nodeId];
 
-            file = files.find(f => f.name === fileName);
-
-            if (!file) {
-                return res.status(404).json({ error: "File not found in MEGA" });
-            }
-
-            console.log("✅ Found in MEGA:", file.name);
-
-            // 🔥 Cache again
-            uploadedFiles[fileId] = file;
+        if (!file) {
+            return res.status(404).send("File not found in MEGA");
         }
 
-        // ==============================
-        // ⬇️ STREAM FILE
-        // ==============================
+        console.log("✅ File ready:", file.name, file.size);
+
         const stream = file.download();
 
         res.setHeader(
@@ -138,16 +164,18 @@ app.get("/download/:fileId/:fileName", async (req, res) => {
 
         res.setHeader("Content-Type", "application/octet-stream");
 
+        if (file.size) {
+            res.setHeader("Content-Length", file.size);
+        }
+
         stream.pipe(res);
 
     } catch (err) {
         console.error("❌ Download error:", err);
-        res.status(500).json({ error: err.message });
+        res.status(500).send(err.message);
     }
 });
 
-// ==============================
-// 🚀 START SERVER
 // ==============================
 const PORT = process.env.PORT || 3000;
 
