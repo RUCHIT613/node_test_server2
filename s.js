@@ -1,142 +1,3 @@
-// const express = require("express");
-// const multer = require("multer");
-// const fs = require("fs");
-// const path = require("path");
-// const Mega = require("megajs");
-
-// const app = express();
-// const upload = multer({ dest: "uploads/" });
-
-// // 🔐 MEGA credentials
-// const email = "ruchit.patil0256@gmail.com";
-// const password = "JJungbareum5";
-
-// // ==============================
-// // ✅ MEGA LOGIN (ONCE)
-// // ==============================
-// const storage = Mega({
-//     email,
-//     password,
-//     keepalive: true
-// });
-
-// let isReady = false;
-
-// // 🔥 TEMP STORE (fileId → MEGA file)
-// const uploadedFiles = {};
-
-// storage.on("ready", () => {
-//     console.log("✅ Logged into MEGA");
-//     isReady = true;
-// });
-
-// storage.on("error", (err) => {
-//     console.error("❌ MEGA error:", err);
-// });
-
-// // ==============================
-// // ✅ TEST
-// // ==============================
-// app.get("/", (req, res) => {
-//     res.send("🚀 Server running");
-// });
-
-// // ==============================
-// // 📤 UPLOAD ROUTE
-// // ==============================
-// app.post("/upload", upload.single("file"), (req, res) => {
-
-//     if (!isReady) {
-//         return res.status(500).json({ error: "MEGA not ready" });
-//     }
-
-//     const filePath = req.file.path;
-//     let fileName = req.file.originalname;
-
-//     console.log("📤 Received:", fileName);
-
-//     // 🔥 Fix filename if no extension
-//     if (!path.extname(fileName)) {
-//         fileName = "upload_" + Date.now() + ".mp3";
-//     }
-
-//     const fileStream = fs.createReadStream(filePath);
-
-//     const uploadStream = storage.upload({
-//         name: fileName,
-//         size: fs.statSync(filePath).size
-//     });
-
-//     fileStream.pipe(uploadStream);
-
-//     uploadStream.on("complete", (file) => {
-
-//         console.log("✅ Uploaded:", file.name);
-
-//         // 🔥 Store reference
-//         const fileId = Date.now().toString();
-//         uploadedFiles[fileId] = file;
-
-//         // delete temp file
-//         fs.unlinkSync(filePath);
-
-//         res.json({
-//             success: true,
-//             fileId: fileId
-//         });
-//     });
-
-//     uploadStream.on("error", (err) => {
-//         console.error("❌ Upload error:", err);
-//         res.status(500).json({ error: err.message });
-//     });
-// });
-
-// // ==============================
-// // ⬇️ DOWNLOAD ROUTE (MAIN FIX)
-// // ==============================
-// app.get("/download/:fileId", (req, res) => {
-
-//     const fileId = req.params.fileId;
-//     const file = uploadedFiles[fileId];
-
-//     if (!file) {
-//         return res.status(404).json({ error: "File not found" });
-//     }
-
-//     console.log("⬇️ Download:", file.name);
-
-//     try {
-//         const stream = file.download();
-
-//         // 🔥 Headers (VERY IMPORTANT)
-//         res.setHeader(
-//             "Content-Disposition",
-//             `attachment; filename="${file.name}"`
-//         );
-
-//         res.setHeader("Content-Type", "application/octet-stream");
-
-//         // ✅ Stream file
-//         stream.pipe(res);
-
-//     } catch (err) {
-//         console.error("❌ Download error:", err);
-//         res.status(500).json({ error: err.message });
-//     }
-// });
-
-// // ==============================
-// // 🚀 START SERVER
-// // ==============================
-// // app.listen(3000, () => {
-// //     console.log("🚀 Running on http://localhost:3000");
-// // });
-// const PORT = process.env.PORT || 3000;
-
-// app.listen(PORT, () => {
-//     console.log("🚀 Running on port " + PORT);
-// });
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
@@ -161,7 +22,7 @@ const storage = Mega({
 
 let isReady = false;
 
-// 🔥 Store uploaded file references
+// 🔥 In-memory cache
 const uploadedFiles = {};
 
 storage.on("ready", () => {
@@ -181,7 +42,7 @@ app.get("/", (req, res) => {
 });
 
 // ==============================
-// 📤 UPLOAD ROUTE (ALL FILE TYPES)
+// 📤 UPLOAD ROUTE
 // ==============================
 app.post("/upload", upload.single("file"), (req, res) => {
 
@@ -194,7 +55,7 @@ app.post("/upload", upload.single("file"), (req, res) => {
 
     console.log("📤 Received:", fileName);
 
-    // 🔥 Fix filename if missing extension
+    // 🔥 Ensure extension exists
     if (!path.extname(fileName)) {
         fileName = "file_" + Date.now();
     }
@@ -212,16 +73,14 @@ app.post("/upload", upload.single("file"), (req, res) => {
 
         console.log("✅ Uploaded to MEGA:", file.name);
 
-        // 🔥 Generate fileId
         const fileId = Date.now().toString();
 
-        // 🔥 Store MEGA file object
+        // 🔥 Store in memory
         uploadedFiles[fileId] = file;
 
         // delete temp file
         fs.unlinkSync(filePath);
 
-        // ✅ Send BOTH fileId + fileName
         res.json({
             success: true,
             fileId: fileId,
@@ -236,23 +95,42 @@ app.post("/upload", upload.single("file"), (req, res) => {
 });
 
 // ==============================
-// ⬇️ DOWNLOAD ROUTE (ALL FILE TYPES)
+// ⬇️ DOWNLOAD ROUTE (SMART)
 // ==============================
-app.get("/download/:fileId", (req, res) => {
+app.get("/download/:fileId/:fileName", async (req, res) => {
 
-    const fileId = req.params.fileId;
-    const file = uploadedFiles[fileId];
+    const { fileId, fileName } = req.params;
 
-    if (!file) {
-        return res.status(404).json({ error: "File not found" });
-    }
-
-    console.log("⬇️ Download:", file.name);
+    let file = uploadedFiles[fileId];
 
     try {
+        // ==============================
+        // 🔥 STEP 1: Check memory
+        // ==============================
+        if (file) {
+            console.log("⚡ Found in memory:", file.name);
+        } else {
+            console.log("🔍 Not in memory, searching MEGA...");
+
+            const files = storage.root.children;
+
+            file = files.find(f => f.name === fileName);
+
+            if (!file) {
+                return res.status(404).json({ error: "File not found in MEGA" });
+            }
+
+            console.log("✅ Found in MEGA:", file.name);
+
+            // 🔥 Cache again
+            uploadedFiles[fileId] = file;
+        }
+
+        // ==============================
+        // ⬇️ STREAM FILE
+        // ==============================
         const stream = file.download();
 
-        // 🔥 Set proper headers
         res.setHeader(
             "Content-Disposition",
             `attachment; filename="${file.name}"`
@@ -260,7 +138,6 @@ app.get("/download/:fileId", (req, res) => {
 
         res.setHeader("Content-Type", "application/octet-stream");
 
-        // ✅ Stream file
         stream.pipe(res);
 
     } catch (err) {
