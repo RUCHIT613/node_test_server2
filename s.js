@@ -1,3 +1,5 @@
+
+
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
@@ -176,10 +178,45 @@ app.get("/download/:nodeId/:fileName", async (req, res) => {
     }
 });
 
+app.delete("/delete/:nodeId", async (req, res) => {
+
+    const { nodeId } = req.params;
+
+    try {
+        console.log("🗑 Deleting file:", nodeId);
+
+        const file = storage.files[nodeId];
+
+        if (!file) {
+            return res.status(404).json({ error: "File not found" });
+        }
+
+        // 🔥 DELETE FILE
+        await new Promise((resolve, reject) => {
+            file.delete((err) => {
+                if (err) return reject(err);
+                resolve();
+            });
+        });
+
+        console.log("✅ File deleted");
+
+        res.json({
+            success: true,
+            message: "File deleted successfully"
+        });
+
+    } catch (err) {
+        console.error("❌ Delete error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+
 // ==============================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
     console.log("🚀 Running on port " + PORT);
 });
-///TESTING ATTENTION PLEASE
