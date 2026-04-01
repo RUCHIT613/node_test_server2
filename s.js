@@ -8,8 +8,8 @@ const app = express();
 const upload = multer({ dest: "uploads/" });
 
 // 🔐 MEGA credentials
-const email = "ruchit.patil0256@gmail.com";
-const password = "JJJungbareum5";
+const email = process.env.MEGA_EMAIL;
+const password = process.env.MEGA_PASSWORD;
 
 // ==============================
 // ✅ MEGA LOGIN
